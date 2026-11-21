@@ -1118,7 +1118,7 @@ tbody tr:hover {
       <div class="stat-card">
         <div class="stat-label">Estimated Income</div>
         <div class="stat-value green" id="estimatedIncome">₱0.00</div>
-        <div class="stat-sub">All earnings combined</div>
+        <div class="stat-sub">After late deductions</div>
       </div>
 
 
@@ -1213,11 +1213,12 @@ tbody tr:hover {
               <th>Time Out</th>
               <th>Paid Hours</th>
               <th>OT Hours</th>
+              <th>Late / Deduction</th>
               <th>Daily Rate</th>
               <th>Regular Pay</th>
               <th>OT Pay</th>
               <th>Night Diff.</th>
-              <th>Income</th>
+              <th>Net Income</th>
               <th>Remarks</th>
               <th>Actions</th>
             </tr>
@@ -1272,8 +1273,8 @@ tbody tr:hover {
 
 
         <div class="stat-card">
-          <div class="stat-label">Total Estimated Income</div>
-          <div class="stat-value blue" id="totalIncome">₱0.00</div>
+          <div class="stat-label">Late Deduction</div>
+          <div class="stat-value red" id="lateDeduction">₱0.00</div>
         </div>
 
 
@@ -1413,6 +1414,7 @@ const STORAGE_KEY = "dtr_payroll_tracker_v7";
 const defaultSettings = {
   dailyRate: 800,
   dailyHours: 8,
+  officialStartTime: "06:00",
   otPremium: 25,
   nightPremium: 10,
   currency: "₱",
@@ -1600,6 +1602,7 @@ function loadState() {
 
 
       c.records.forEach(r => {
+        r.officialStartTime = r.officialStartTime || state.settings.officialStartTime;
         r.rateOverride = r.rateOverride == null ?
           null : Number(r.rateOverride);
 
@@ -1668,6 +1671,23 @@ function getRates(cutoff, record = null) {
     nightHourly: hourly *
       (1 + Number(cutoff.nightPremium) / 100)
   };
+}
+
+
+function getLateMinutes(timeIn, officialStartTime = state.settings.officialStartTime) {
+  if (!timeIn || !officialStartTime) return 0;
+
+  const [timeInHours, timeInMinutes] = timeIn.split(":").map(Number);
+  const [startHours, startMinutes] = officialStartTime.split(":").map(Number);
+  const actualMinutes = timeInHours * 60 + timeInMinutes;
+  const scheduledMinutes = startHours * 60 + startMinutes;
+
+  if (!Number.isFinite(actualMinutes) || !Number.isFinite(scheduledMinutes)) {
+    return 0;
+  }
+
+  const minutesLate = actualMinutes - scheduledMinutes;
+  return minutesLate > 0 ? Math.ceil(minutesLate / 30) * 30 : 0;
 }
 
 
@@ -1796,7 +1816,9 @@ function getPaidSegments(segments, breakHours) {
 
 
 function calculateRecord(record, cutoff) {
-
+  const officialStartTime = record.officialStartTime || state.settings.officialStartTime;
+  const lateMinutes = getLateMinutes(record.timeIn, officialStartTime);
+  const rates = getRates(cutoff, record);
 
   if (!record.date ||
       !record.timeIn ||
@@ -1810,6 +1832,9 @@ function calculateRecord(record, cutoff) {
       regularHours: 0,
       otHours: 0,
       nightHours: 0,
+      lateMinutes,
+      lateDeduction: 0,
+      grossIncome: 0,
       regularPay: 0,
       otPay: 0,
       nightPay: 0,
@@ -1846,9 +1871,6 @@ function calculateRecord(record, cutoff) {
   const totalPaid = paidSegments.reduce(
     (sum, s) => sum + s.hours, 0
   );
-
-
-  const rates = getRates(cutoff, record);
 
 
   let regularHours = 0;
@@ -1902,6 +1924,10 @@ function calculateRecord(record, cutoff) {
   }
 
 
+  const grossIncome = regularPay + otPay + nightPay;
+  const lateDeduction = rates.hourly * lateMinutes / 60;
+
+
   Object.assign(record, {
     grossHours: Number(grossHours.toFixed(4)),
     breakDeduction,
@@ -1909,10 +1935,13 @@ function calculateRecord(record, cutoff) {
     regularHours: Number(regularHours.toFixed(4)),
     otHours: Number(otHours.toFixed(4)),
     nightHours: Number(nightHours.toFixed(4)),
+    lateMinutes,
+    lateDeduction,
+    grossIncome,
     regularPay,
     otPay,
     nightPay,
-    income: regularPay + otPay + nightPay
+    income: grossIncome - lateDeduction
   });
 
 
@@ -1943,6 +1972,7 @@ function summarize(cutoff) {
       s.regularPay += r.regularPay;
       s.otPay += r.otPay;
       s.nightPay += r.nightPay;
+      s.lateDeduction += r.lateDeduction;
       s.income += r.income;
 
 
@@ -1957,6 +1987,7 @@ function summarize(cutoff) {
       regularPay: 0,
       otPay: 0,
       nightPay: 0,
+      lateDeduction: 0,
       income: 0
     });
 }
@@ -1990,7 +2021,7 @@ function renderDashboard() {
   $("regularPay").textContent = money(summary.regularPay);
   $("otPay").textContent = money(summary.otPay);
   $("nightPay").textContent = money(summary.nightPay);
-  $("totalIncome").textContent = money(summary.income);
+  $("lateDeduction").textContent = money(summary.lateDeduction);
 
   $("infoDaily").textContent = money(rates.daily);
   $("infoHourly").textContent = money(rates.hourly);
@@ -2092,6 +2123,7 @@ function renderAttendanceTable() {
         <td>${escapeHTML(r.timeOut || "—")}</td>
         <td>${Number(r.hours || 0).toFixed(2)}</td>
         <td class="red">${Number(r.otHours || 0).toFixed(2)}</td>
+        <td class="red">${r.lateMinutes ? `${r.lateMinutes} min · ${money(r.lateDeduction)}` : "—"}</td>
         <td>${money(getRates(cutoff, r).daily)}</td>
         <td class="money">${money(r.regularPay)}</td>
         <td class="money">${money(r.otPay)}</td>
@@ -2149,8 +2181,15 @@ function updateAttendanceButtons() {
   $("timeInBtn").disabled = !!active;
   $("timeOutBtn").disabled = !active;
 
+  const lateMinutes = active
+    ? getLateMinutes(active.timeIn, active.officialStartTime || state.settings.officialStartTime)
+    : 0;
+  const estimatedLateDeduction = active
+    ? getRates(cutoff, active).hourly * lateMinutes / 60
+    : 0;
+
   $("attendanceStatus").textContent = active
-    ? `Currently on duty since ${active.timeIn}.`
+    ? `Currently on duty since ${active.timeIn}. ${lateMinutes ? `Late by ${lateMinutes} min; estimated deduction ${money(estimatedLateDeduction)}.` : "On time."}`
     : "Ready to record attendance.";
 }
 
@@ -2167,7 +2206,7 @@ function timeIn() {
     return;
   }
 
-  const now = roundToNearest30(new Date());
+  const now = new Date();
   const date = [
     now.getFullYear(),
     String(now.getMonth() + 1).padStart(2, "0"),
@@ -2190,6 +2229,7 @@ function timeIn() {
     timeIn: time,
     timeOut: "",
     remarks: "",
+    officialStartTime: state.settings.officialStartTime,
     rateOverride: null,
     isActive: true
   };
@@ -2217,7 +2257,7 @@ function timeOut() {
     return;
   }
 
-  const now = roundToNearest30(new Date());
+  const now = new Date();
 
   const date = [
     now.getFullYear(),
@@ -2296,6 +2336,7 @@ function openManualEntry() {
       timeIn: data.timeIn,
       timeOut: data.timeOut,
       remarks: data.remarks,
+      officialStartTime: state.settings.officialStartTime,
       rateOverride: null,
       isActive: false
     };
@@ -2565,6 +2606,16 @@ function openSettings() {
   openModal("Payroll Settings", `
 
     <div class="form-group">
+      <label>Official Start Time</label>
+      <input type="time" name="officialStartTime"
+        value="${escapeHTML(settings.officialStartTime)}" required>
+      <small class="helper">
+        Each started 30-minute late block is deducted at your hourly rate.
+        This schedule applies to new attendance records.
+      </small>
+    </div>
+
+    <div class="form-group">
       <label>Default Daily Rate (₱)</label>
 
       <input type="number" name="dailyRate"
@@ -2675,6 +2726,7 @@ function openSettings() {
 
     const dailyRate = Number(data.dailyRate);
     const dailyHours = Number(data.dailyHours);
+    const officialStartTime = data.officialStartTime;
     const otPremium = Number(data.otPremium);
     const nightPremium = Number(data.nightPremium);
 
@@ -2682,6 +2734,7 @@ function openSettings() {
       !Number.isFinite(dailyRate) || dailyRate < 0 ||
       !Number.isFinite(dailyHours) || dailyHours <= 0 ||
       dailyHours > 24 ||
+      !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(officialStartTime) ||
       !Number.isFinite(otPremium) || otPremium < 0 ||
       !Number.isFinite(nightPremium) || nightPremium < 0 ||
       !data.currency.trim()
@@ -2694,13 +2747,14 @@ function openSettings() {
       ...state.settings,
       dailyRate,
       dailyHours,
+      officialStartTime,
       otPremium,
       nightPremium,
       currency: data.currency.trim(),
       withBreakTime: data.withBreakTime === "on"
     };
 
-    // Apply new defaults to future records and cut-offs.
+    // New attendance records keep the official start time used when they were entered.
     // Existing cut-off rates remain unchanged.
     saveState();
     renderDashboard();
@@ -2806,7 +2860,9 @@ function exportCSV() {
     "Time Out",
     "Hours",
     "OT Hours",
-    "Income",
+    "Late Minutes",
+    "Late Deduction",
+    "Net Income",
     "Remarks"
   ];
 
@@ -2821,6 +2877,8 @@ function exportCSV() {
         r.timeOut,
         r.hours.toFixed(2),
         r.otHours.toFixed(2),
+        r.lateMinutes,
+        r.lateDeduction.toFixed(2),
         r.income.toFixed(2),
         r.remarks || ""
       ];
@@ -2920,6 +2978,7 @@ $("restoreInput").addEventListener("change", async e => {
       c.records.forEach(r => {
         if (!r.id) r.id = uid();
 
+        r.officialStartTime = r.officialStartTime || state.settings.officialStartTime;
         r.rateOverride =
           r.rateOverride == null ? null : Number(r.rateOverride);
 
@@ -3014,22 +3073,6 @@ document.addEventListener(
   "DOMContentLoaded",
   initializeApp
 );
-
-function roundToNearest30(date) {
-  const d = new Date(date);
-  const minutes = d.getMinutes();
-
-  if (minutes < 15) {
-    d.setMinutes(0, 0, 0);
-  } else if (minutes < 45) {
-    d.setMinutes(30, 0, 0);
-  } else {
-    d.setHours(d.getHours() + 1);
-    d.setMinutes(0, 0, 0);
-  }
-
-  return d;
-}
 
 </script>
 
