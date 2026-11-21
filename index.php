@@ -318,12 +318,6 @@ button:disabled {
 }
 
 
-.top-actions {
-  display: flex;
-  gap: 8px;
-}
-
-
 .topbar-left {
   display: flex;
   gap: 12px;
@@ -882,16 +876,6 @@ tbody tr:hover {
   }
 
 
-  .top-actions {
-    width: 100%;
-  }
-
-
-  .top-actions button {
-    flex: 1;
-  }
-
-
   .stats-grid {
     grid-template-columns: repeat(2,minmax(0,1fr));
     gap: 10px;
@@ -1059,28 +1043,6 @@ tbody tr:hover {
     </div>
 
 
-    <div class="top-actions">
-
-
-      <button class="btn btn-secondary btn-sm" id="backupBtn">
-        ↓ Backup
-      </button>
-
-
-      <button class="btn btn-secondary btn-sm" id="restoreBtn">
-        ↑ Restore
-      </button>
-
-
-      <input
-        type="file"
-        id="restoreInput"
-        accept=".json,application/json"
-        hidden
-      >
-
-
-    </div>
 
 
   </header>
@@ -1118,7 +1080,7 @@ tbody tr:hover {
       <div class="stat-card">
         <div class="stat-label">Estimated Income</div>
         <div class="stat-value green" id="estimatedIncome">₱0.00</div>
-        <div class="stat-sub">All earnings combined</div>
+        <div class="stat-sub">After late deductions</div>
       </div>
 
 
@@ -1191,9 +1153,6 @@ tbody tr:hover {
           </select>
 
 
-          <button class="btn btn-secondary btn-sm" id="exportCsvBtn">
-            ↓ Export CSV
-          </button>
 
 
         </div>
@@ -1213,11 +1172,12 @@ tbody tr:hover {
               <th>Time Out</th>
               <th>Paid Hours</th>
               <th>OT Hours</th>
+              <th>Late / Deduction</th>
               <th>Daily Rate</th>
               <th>Regular Pay</th>
               <th>OT Pay</th>
               <th>Night Diff.</th>
-              <th>Income</th>
+              <th>Net Income</th>
               <th>Remarks</th>
               <th>Actions</th>
             </tr>
@@ -1272,8 +1232,8 @@ tbody tr:hover {
 
 
         <div class="stat-card">
-          <div class="stat-label">Total Estimated Income</div>
-          <div class="stat-value blue" id="totalIncome">₱0.00</div>
+          <div class="stat-label">Late Deduction</div>
+          <div class="stat-value red" id="lateDeduction">₱0.00</div>
         </div>
 
 
@@ -1413,6 +1373,7 @@ const STORAGE_KEY = "dtr_payroll_tracker_v7";
 const defaultSettings = {
   dailyRate: 800,
   dailyHours: 8,
+  officialStartTime: "06:00",
   otPremium: 25,
   nightPremium: 10,
   currency: "₱",
@@ -1600,6 +1561,7 @@ function loadState() {
 
 
       c.records.forEach(r => {
+        r.officialStartTime = r.officialStartTime || state.settings.officialStartTime;
         r.rateOverride = r.rateOverride == null ?
           null : Number(r.rateOverride);
 
@@ -1671,6 +1633,23 @@ function getRates(cutoff, record = null) {
 }
 
 
+function getLateMinutes(timeIn, officialStartTime = state.settings.officialStartTime) {
+  if (!timeIn || !officialStartTime) return 0;
+
+  const [timeInHours, timeInMinutes] = timeIn.split(":").map(Number);
+  const [startHours, startMinutes] = officialStartTime.split(":").map(Number);
+  const actualMinutes = timeInHours * 60 + timeInMinutes;
+  const scheduledMinutes = startHours * 60 + startMinutes;
+
+  if (!Number.isFinite(actualMinutes) || !Number.isFinite(scheduledMinutes)) {
+    return 0;
+  }
+
+  const minutesLate = actualMinutes - scheduledMinutes;
+  return minutesLate > 0 ? Math.ceil(minutesLate / 30) * 30 : 0;
+}
+
+
 /* ==========================================
    5. SHIFT CALCULATIONS
 ========================================== */
@@ -1693,9 +1672,10 @@ function timestamp(date, time) {
 */
 
 
-function getShiftSegments(date, timeIn, timeOut) {
+function getShiftSegments(date, timeIn, timeOut, timeOutDate) {
   const start = timestamp(date, timeIn);
-  let end = timestamp(date, timeOut);
+  const endDate = timeOutDate || date;
+  let end = timestamp(endDate, timeOut);
 
 
   if (!Number.isFinite(start) ||
@@ -1704,8 +1684,9 @@ function getShiftSegments(date, timeIn, timeOut) {
   }
 
 
-  // Overnight shift.
+  // Infer overnight only for legacy and manual records without an end date.
   if (end <= start) {
+    if (timeOutDate) return [];
     end += 86400000;
   }
 
@@ -1796,7 +1777,9 @@ function getPaidSegments(segments, breakHours) {
 
 
 function calculateRecord(record, cutoff) {
-
+  const officialStartTime = record.officialStartTime || state.settings.officialStartTime;
+  const lateMinutes = getLateMinutes(record.timeIn, officialStartTime);
+  const rates = getRates(cutoff, record);
 
   if (!record.date ||
       !record.timeIn ||
@@ -1810,6 +1793,9 @@ function calculateRecord(record, cutoff) {
       regularHours: 0,
       otHours: 0,
       nightHours: 0,
+      lateMinutes,
+      lateDeduction: 0,
+      grossIncome: 0,
       regularPay: 0,
       otPay: 0,
       nightPay: 0,
@@ -1824,7 +1810,8 @@ function calculateRecord(record, cutoff) {
   const segments = getShiftSegments(
     record.date,
     record.timeIn,
-    record.timeOut
+    record.timeOut,
+    record.timeOutDate
   );
 
 
@@ -1846,9 +1833,6 @@ function calculateRecord(record, cutoff) {
   const totalPaid = paidSegments.reduce(
     (sum, s) => sum + s.hours, 0
   );
-
-
-  const rates = getRates(cutoff, record);
 
 
   let regularHours = 0;
@@ -1902,6 +1886,10 @@ function calculateRecord(record, cutoff) {
   }
 
 
+  const grossIncome = regularPay + otPay + nightPay;
+  const lateDeduction = rates.hourly * lateMinutes / 60;
+
+
   Object.assign(record, {
     grossHours: Number(grossHours.toFixed(4)),
     breakDeduction,
@@ -1909,10 +1897,13 @@ function calculateRecord(record, cutoff) {
     regularHours: Number(regularHours.toFixed(4)),
     otHours: Number(otHours.toFixed(4)),
     nightHours: Number(nightHours.toFixed(4)),
+    lateMinutes,
+    lateDeduction,
+    grossIncome,
     regularPay,
     otPay,
     nightPay,
-    income: regularPay + otPay + nightPay
+    income: grossIncome - lateDeduction
   });
 
 
@@ -1943,6 +1934,7 @@ function summarize(cutoff) {
       s.regularPay += r.regularPay;
       s.otPay += r.otPay;
       s.nightPay += r.nightPay;
+      s.lateDeduction += r.lateDeduction;
       s.income += r.income;
 
 
@@ -1957,6 +1949,7 @@ function summarize(cutoff) {
       regularPay: 0,
       otPay: 0,
       nightPay: 0,
+      lateDeduction: 0,
       income: 0
     });
 }
@@ -1990,7 +1983,7 @@ function renderDashboard() {
   $("regularPay").textContent = money(summary.regularPay);
   $("otPay").textContent = money(summary.otPay);
   $("nightPay").textContent = money(summary.nightPay);
-  $("totalIncome").textContent = money(summary.income);
+  $("lateDeduction").textContent = money(summary.lateDeduction);
 
   $("infoDaily").textContent = money(rates.daily);
   $("infoHourly").textContent = money(rates.hourly);
@@ -2092,6 +2085,7 @@ function renderAttendanceTable() {
         <td>${escapeHTML(r.timeOut || "—")}</td>
         <td>${Number(r.hours || 0).toFixed(2)}</td>
         <td class="red">${Number(r.otHours || 0).toFixed(2)}</td>
+        <td class="red">${r.lateMinutes ? `${r.lateMinutes} min · ${money(r.lateDeduction)}` : "—"}</td>
         <td>${money(getRates(cutoff, r).daily)}</td>
         <td class="money">${money(r.regularPay)}</td>
         <td class="money">${money(r.otPay)}</td>
@@ -2149,8 +2143,15 @@ function updateAttendanceButtons() {
   $("timeInBtn").disabled = !!active;
   $("timeOutBtn").disabled = !active;
 
+  const lateMinutes = active
+    ? getLateMinutes(active.timeIn, active.officialStartTime || state.settings.officialStartTime)
+    : 0;
+  const estimatedLateDeduction = active
+    ? getRates(cutoff, active).hourly * lateMinutes / 60
+    : 0;
+
   $("attendanceStatus").textContent = active
-    ? `Currently on duty since ${active.timeIn}.`
+    ? `Currently on duty since ${active.timeIn}. ${lateMinutes ? `Late by ${lateMinutes} min; estimated deduction ${money(estimatedLateDeduction)}.` : "On time."}`
     : "Ready to record attendance.";
 }
 
@@ -2167,7 +2168,7 @@ function timeIn() {
     return;
   }
 
-  const now = roundToNearest30(new Date());
+  const now = new Date();
   const date = [
     now.getFullYear(),
     String(now.getMonth() + 1).padStart(2, "0"),
@@ -2184,12 +2185,16 @@ function timeIn() {
     return;
   }
 
+  const officialStartTime = state.settings.officialStartTime;
+  const recordedTime = time < officialStartTime ? officialStartTime : time;
+
   const record = {
     id: uid(),
     date,
-    timeIn: time,
+    timeIn: recordedTime,
     timeOut: "",
     remarks: "",
+    officialStartTime,
     rateOverride: null,
     isActive: true
   };
@@ -2199,7 +2204,9 @@ function timeIn() {
   saveState();
   renderDashboard();
 
-  notify("Time In recorded successfully!");
+  notify(recordedTime !== time
+    ? "Early Time In recorded at the official start time. Edit the record to change it."
+    : "Time In recorded successfully!");
 }
 
 // ==========================================
@@ -2217,7 +2224,7 @@ function timeOut() {
     return;
   }
 
-  const now = roundToNearest30(new Date());
+  const now = new Date();
 
   const date = [
     now.getFullYear(),
@@ -2230,7 +2237,15 @@ function timeOut() {
     String(now.getMinutes()).padStart(2, "0")
   ].join(":");
 
+  const checkedOutBeforeRecordedTime = date === record.date && time <= record.timeIn;
+
+  if (checkedOutBeforeRecordedTime) {
+    notify("Time Out cannot be earlier than Time In. No Time Out was recorded.", "error");
+    return;
+  }
+
   record.timeOut = time;
+  record.timeOutDate = date;
   record.isActive = false;
 
   calculateRecord(record, cutoff);
@@ -2296,6 +2311,7 @@ function openManualEntry() {
       timeIn: data.timeIn,
       timeOut: data.timeOut,
       remarks: data.remarks,
+      officialStartTime: state.settings.officialStartTime,
       rateOverride: null,
       isActive: false
     };
@@ -2380,6 +2396,7 @@ function editRecord(id) {
     record.date = data.date;
     record.timeIn = data.timeIn;
     record.timeOut = data.timeOut;
+    record.timeOutDate = data.date;
     record.remarks = data.remarks;
     record.rateOverride =
       data.rateOverride === "" ? null : Number(data.rateOverride);
@@ -2565,6 +2582,15 @@ function openSettings() {
   openModal("Payroll Settings", `
 
     <div class="form-group">
+      <label>Official Start Time</label>
+      <input type="time" name="officialStartTime"
+        value="${escapeHTML(settings.officialStartTime)}" required>
+      <small class="helper">
+        Early clock-ins are recorded at this start time. After the start, each started 30-minute late block is deducted at your hourly rate (for example, 6:01 AM = 30 minutes). Edit the attendance record to change its time. This schedule applies to new records.
+      </small>
+    </div>
+
+    <div class="form-group">
       <label>Default Daily Rate (₱)</label>
 
       <input type="number" name="dailyRate"
@@ -2675,6 +2701,7 @@ function openSettings() {
 
     const dailyRate = Number(data.dailyRate);
     const dailyHours = Number(data.dailyHours);
+    const officialStartTime = data.officialStartTime;
     const otPremium = Number(data.otPremium);
     const nightPremium = Number(data.nightPremium);
 
@@ -2682,6 +2709,7 @@ function openSettings() {
       !Number.isFinite(dailyRate) || dailyRate < 0 ||
       !Number.isFinite(dailyHours) || dailyHours <= 0 ||
       dailyHours > 24 ||
+      !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(officialStartTime) ||
       !Number.isFinite(otPremium) || otPremium < 0 ||
       !Number.isFinite(nightPremium) || nightPremium < 0 ||
       !data.currency.trim()
@@ -2694,13 +2722,14 @@ function openSettings() {
       ...state.settings,
       dailyRate,
       dailyHours,
+      officialStartTime,
       otPremium,
       nightPremium,
       currency: data.currency.trim(),
       withBreakTime: data.withBreakTime === "on"
     };
 
-    // Apply new defaults to future records and cut-offs.
+    // New attendance records keep the official start time used when they were entered.
     // Existing cut-off rates remain unchanged.
     saveState();
     renderDashboard();
@@ -2789,199 +2818,7 @@ $("menuBtn").addEventListener("click", openDrawer);
 $("overlay").addEventListener("click", closeDrawer);
 
 // ==========================================
-// 25. CSV EXPORT
-// ==========================================
-
-function exportCSV() {
-  const cutoff = getCurrentCutoff();
-
-  if (!cutoff) {
-    notify("Select a cut-off first.", "error");
-    return;
-  }
-
-  const headers = [
-    "Date",
-    "Time In",
-    "Time Out",
-    "Hours",
-    "OT Hours",
-    "Income",
-    "Remarks"
-  ];
-
-  const rows = cutoff.records
-    .filter(r => r.timeIn && r.timeOut)
-    .map(r => {
-      calculateRecord(r, cutoff);
-
-      return [
-        r.date,
-        r.timeIn,
-        r.timeOut,
-        r.hours.toFixed(2),
-        r.otHours.toFixed(2),
-        r.income.toFixed(2),
-        r.remarks || ""
-      ];
-    });
-
-  const escapeCSV = value =>
-    '"' + String(value ?? "").replace(/"/g, '""') + '"';
-
-  const csv = [
-    headers.map(escapeCSV).join(","),
-    ...rows.map(row => row.map(escapeCSV).join(","))
-  ].join("\r\n");
-
-  downloadFile(
-    "\uFEFF" + csv,
-    `DTR_${cutoff.name.replace(/[^a-z0-9]/gi, "_")}.csv`,
-    "text/csv;charset=utf-8;"
-  );
-
-  notify("CSV exported successfully!");
-}
-
-// ==========================================
-// 26. JSON BACKUP
-// ==========================================
-
-function backupData() {
-  saveState();
-
-  const backup = {
-    application: "DTR & Payroll Tracker",
-    version: 7,
-    backupDate: new Date().toISOString(),
-    data: state
-  };
-
-  const json = JSON.stringify(backup, null, 2);
-
-  downloadFile(
-    json,
-    "DTR_Backup_" +
-      new Date().toISOString().slice(0, 10) +
-      ".json",
-    "application/json"
-  );
-
-  notify("Backup downloaded successfully!");
-}
-
-// ==========================================
-// 27. RESTORE JSON BACKUP
-// ==========================================
-
-function restoreData() {
-  $("restoreInput").click();
-}
-
-$("restoreInput").addEventListener("change", async e => {
-  const file = e.target.files[0];
-
-  if (!file) return;
-
-  try {
-    const text = await file.text();
-    const backup = JSON.parse(text);
-
-    const imported = backup.data || backup;
-
-    if (!Array.isArray(imported.cutoffs) ||
-        !imported.settings) {
-      throw new Error("Invalid backup structure.");
-    }
-
-    const confirmed = confirm(
-      "Restore this backup?\n\n" +
-      "Your current application data will be replaced."
-    );
-
-    if (!confirmed) {
-      e.target.value = "";
-      return;
-    }
-
-    state = {
-      cutoffs: imported.cutoffs,
-      selectedCutoffId: imported.selectedCutoffId || null,
-      settings: {
-        ...defaultSettings,
-        ...imported.settings
-      }
-    };
-
-    // Validate and recalculate imported records.
-    state.cutoffs.forEach(c => {
-      c.records = Array.isArray(c.records) ? c.records : [];
-
-      c.records.forEach(r => {
-        if (!r.id) r.id = uid();
-
-        r.rateOverride =
-          r.rateOverride == null ? null : Number(r.rateOverride);
-
-        r.isActive = Boolean(r.isActive);
-
-        calculateRecord(r, c);
-      });
-    });
-
-    if (!state.cutoffs.some(c =>
-      c.id === state.selectedCutoffId
-    )) {
-      state.selectedCutoffId =
-        state.cutoffs[0]?.id || null;
-    }
-
-    saveState();
-    applyTheme();
-    renderDashboard();
-
-    notify("Backup restored successfully!");
-
-  } catch (error) {
-    console.error(error);
-    notify("Invalid or damaged backup file.", "error");
-  }
-
-  e.target.value = "";
-});
-
-// ==========================================
-// 28. DOWNLOAD HELPER
-// ==========================================
-
-function downloadFile(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-// ==========================================
-// 29. BUTTON CONNECTIONS
-// ==========================================
-
-$("exportCsvBtn").addEventListener("click", exportCSV);
-
-$("backupBtn").addEventListener("click", backupData);
-
-$("restoreBtn").addEventListener("click", restoreData);
-
-// ==========================================
-// 30. APPLICATION INITIALIZATION
+// 25. APPLICATION INITIALIZATION
 // ==========================================
 
 function initializeApp() {
@@ -3007,29 +2844,13 @@ function initializeApp() {
 }
 
 // ==========================================
-// 31. START APPLICATION
+// 26. START APPLICATION
 // ==========================================
 
 document.addEventListener(
   "DOMContentLoaded",
   initializeApp
 );
-
-function roundToNearest30(date) {
-  const d = new Date(date);
-  const minutes = d.getMinutes();
-
-  if (minutes < 15) {
-    d.setMinutes(0, 0, 0);
-  } else if (minutes < 45) {
-    d.setMinutes(30, 0, 0);
-  } else {
-    d.setHours(d.getHours() + 1);
-    d.setMinutes(0, 0, 0);
-  }
-
-  return d;
-}
 
 </script>
 
