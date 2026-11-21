@@ -2223,13 +2223,16 @@ function timeIn() {
     return;
   }
 
+  const officialStartTime = state.settings.officialStartTime;
+  const recordedTime = time < officialStartTime ? officialStartTime : time;
+
   const record = {
     id: uid(),
     date,
-    timeIn: time,
+    timeIn: recordedTime,
     timeOut: "",
     remarks: "",
-    officialStartTime: state.settings.officialStartTime,
+    officialStartTime,
     rateOverride: null,
     isActive: true
   };
@@ -2239,7 +2242,9 @@ function timeIn() {
   saveState();
   renderDashboard();
 
-  notify("Time In recorded successfully!");
+  notify(recordedTime !== time
+    ? "Early Time In recorded at the official start time. Edit the record to change it."
+    : "Time In recorded successfully!");
 }
 
 // ==========================================
@@ -2610,8 +2615,7 @@ function openSettings() {
       <input type="time" name="officialStartTime"
         value="${escapeHTML(settings.officialStartTime)}" required>
       <small class="helper">
-        Each started 30-minute late block is deducted at your hourly rate.
-        This schedule applies to new attendance records.
+        Early clock-ins are recorded at this start time. After the start, each started 30-minute late block is deducted at your hourly rate (for example, 6:01 AM = 30 minutes). Edit the attendance record to change its time. This schedule applies to new records.
       </small>
     </div>
 
