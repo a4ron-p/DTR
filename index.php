@@ -1713,9 +1713,10 @@ function timestamp(date, time) {
 */
 
 
-function getShiftSegments(date, timeIn, timeOut) {
+function getShiftSegments(date, timeIn, timeOut, timeOutDate) {
   const start = timestamp(date, timeIn);
-  let end = timestamp(date, timeOut);
+  const endDate = timeOutDate || date;
+  let end = timestamp(endDate, timeOut);
 
 
   if (!Number.isFinite(start) ||
@@ -1724,8 +1725,9 @@ function getShiftSegments(date, timeIn, timeOut) {
   }
 
 
-  // Overnight shift.
+  // Infer overnight only for legacy and manual records without an end date.
   if (end <= start) {
+    if (timeOutDate) return [];
     end += 86400000;
   }
 
@@ -1849,7 +1851,8 @@ function calculateRecord(record, cutoff) {
   const segments = getShiftSegments(
     record.date,
     record.timeIn,
-    record.timeOut
+    record.timeOut,
+    record.timeOutDate
   );
 
 
@@ -2275,7 +2278,10 @@ function timeOut() {
     String(now.getMinutes()).padStart(2, "0")
   ].join(":");
 
+  const checkedOutBeforeRecordedTime = date === record.date && time <= record.timeIn;
+
   record.timeOut = time;
+  record.timeOutDate = date;
   record.isActive = false;
 
   calculateRecord(record, cutoff);
@@ -2283,7 +2289,9 @@ function timeOut() {
   saveState();
   renderDashboard();
 
-  notify(`Time Out recorded! Income: ${money(record.income)}`);
+  notify(checkedOutBeforeRecordedTime
+    ? "Time Out was earlier than the recorded Time In, so no hours were counted. Edit the record if needed."
+    : `Time Out recorded! Income: ${money(record.income)}`);
 }
 
 // ==========================================
@@ -2426,6 +2434,7 @@ function editRecord(id) {
     record.date = data.date;
     record.timeIn = data.timeIn;
     record.timeOut = data.timeOut;
+    record.timeOutDate = data.date;
     record.remarks = data.remarks;
     record.rateOverride =
       data.rateOverride === "" ? null : Number(data.rateOverride);
