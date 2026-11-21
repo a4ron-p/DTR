@@ -318,12 +318,6 @@ button:disabled {
 }
 
 
-.top-actions {
-  display: flex;
-  gap: 8px;
-}
-
-
 .topbar-left {
   display: flex;
   gap: 12px;
@@ -882,16 +876,6 @@ tbody tr:hover {
   }
 
 
-  .top-actions {
-    width: 100%;
-  }
-
-
-  .top-actions button {
-    flex: 1;
-  }
-
-
   .stats-grid {
     grid-template-columns: repeat(2,minmax(0,1fr));
     gap: 10px;
@@ -1059,28 +1043,6 @@ tbody tr:hover {
     </div>
 
 
-    <div class="top-actions">
-
-
-      <button class="btn btn-secondary btn-sm" id="backupBtn">
-        ↓ Backup
-      </button>
-
-
-      <button class="btn btn-secondary btn-sm" id="restoreBtn">
-        ↑ Restore
-      </button>
-
-
-      <input
-        type="file"
-        id="restoreInput"
-        accept=".json,application/json"
-        hidden
-      >
-
-
-    </div>
 
 
   </header>
@@ -1191,9 +1153,6 @@ tbody tr:hover {
           </select>
 
 
-          <button class="btn btn-secondary btn-sm" id="exportCsvBtn">
-            ↓ Export CSV
-          </button>
 
 
         </div>
@@ -2280,6 +2239,11 @@ function timeOut() {
 
   const checkedOutBeforeRecordedTime = date === record.date && time <= record.timeIn;
 
+  if (checkedOutBeforeRecordedTime) {
+    notify("Time Out cannot be earlier than Time In. No Time Out was recorded.", "error");
+    return;
+  }
+
   record.timeOut = time;
   record.timeOutDate = date;
   record.isActive = false;
@@ -2289,9 +2253,7 @@ function timeOut() {
   saveState();
   renderDashboard();
 
-  notify(checkedOutBeforeRecordedTime
-    ? "Time Out was earlier than the recorded Time In, so no hours were counted. Edit the record if needed."
-    : `Time Out recorded! Income: ${money(record.income)}`);
+  notify(`Time Out recorded! Income: ${money(record.income)}`);
 }
 
 // ==========================================
@@ -2856,204 +2818,7 @@ $("menuBtn").addEventListener("click", openDrawer);
 $("overlay").addEventListener("click", closeDrawer);
 
 // ==========================================
-// 25. CSV EXPORT
-// ==========================================
-
-function exportCSV() {
-  const cutoff = getCurrentCutoff();
-
-  if (!cutoff) {
-    notify("Select a cut-off first.", "error");
-    return;
-  }
-
-  const headers = [
-    "Date",
-    "Time In",
-    "Time Out",
-    "Hours",
-    "OT Hours",
-    "Late Minutes",
-    "Late Deduction",
-    "Net Income",
-    "Remarks"
-  ];
-
-  const rows = cutoff.records
-    .filter(r => r.timeIn && r.timeOut)
-    .map(r => {
-      calculateRecord(r, cutoff);
-
-      return [
-        r.date,
-        r.timeIn,
-        r.timeOut,
-        r.hours.toFixed(2),
-        r.otHours.toFixed(2),
-        r.lateMinutes,
-        r.lateDeduction.toFixed(2),
-        r.income.toFixed(2),
-        r.remarks || ""
-      ];
-    });
-
-  const escapeCSV = value =>
-    '"' + String(value ?? "").replace(/"/g, '""') + '"';
-
-  const csv = [
-    headers.map(escapeCSV).join(","),
-    ...rows.map(row => row.map(escapeCSV).join(","))
-  ].join("\r\n");
-
-  downloadFile(
-    "\uFEFF" + csv,
-    `DTR_${cutoff.name.replace(/[^a-z0-9]/gi, "_")}.csv`,
-    "text/csv;charset=utf-8;"
-  );
-
-  notify("CSV exported successfully!");
-}
-
-// ==========================================
-// 26. JSON BACKUP
-// ==========================================
-
-function backupData() {
-  saveState();
-
-  const backup = {
-    application: "DTR & Payroll Tracker",
-    version: 7,
-    backupDate: new Date().toISOString(),
-    data: state
-  };
-
-  const json = JSON.stringify(backup, null, 2);
-
-  downloadFile(
-    json,
-    "DTR_Backup_" +
-      new Date().toISOString().slice(0, 10) +
-      ".json",
-    "application/json"
-  );
-
-  notify("Backup downloaded successfully!");
-}
-
-// ==========================================
-// 27. RESTORE JSON BACKUP
-// ==========================================
-
-function restoreData() {
-  $("restoreInput").click();
-}
-
-$("restoreInput").addEventListener("change", async e => {
-  const file = e.target.files[0];
-
-  if (!file) return;
-
-  try {
-    const text = await file.text();
-    const backup = JSON.parse(text);
-
-    const imported = backup.data || backup;
-
-    if (!Array.isArray(imported.cutoffs) ||
-        !imported.settings) {
-      throw new Error("Invalid backup structure.");
-    }
-
-    const confirmed = confirm(
-      "Restore this backup?\n\n" +
-      "Your current application data will be replaced."
-    );
-
-    if (!confirmed) {
-      e.target.value = "";
-      return;
-    }
-
-    state = {
-      cutoffs: imported.cutoffs,
-      selectedCutoffId: imported.selectedCutoffId || null,
-      settings: {
-        ...defaultSettings,
-        ...imported.settings
-      }
-    };
-
-    // Validate and recalculate imported records.
-    state.cutoffs.forEach(c => {
-      c.records = Array.isArray(c.records) ? c.records : [];
-
-      c.records.forEach(r => {
-        if (!r.id) r.id = uid();
-
-        r.officialStartTime = r.officialStartTime || state.settings.officialStartTime;
-        r.rateOverride =
-          r.rateOverride == null ? null : Number(r.rateOverride);
-
-        r.isActive = Boolean(r.isActive);
-
-        calculateRecord(r, c);
-      });
-    });
-
-    if (!state.cutoffs.some(c =>
-      c.id === state.selectedCutoffId
-    )) {
-      state.selectedCutoffId =
-        state.cutoffs[0]?.id || null;
-    }
-
-    saveState();
-    applyTheme();
-    renderDashboard();
-
-    notify("Backup restored successfully!");
-
-  } catch (error) {
-    console.error(error);
-    notify("Invalid or damaged backup file.", "error");
-  }
-
-  e.target.value = "";
-});
-
-// ==========================================
-// 28. DOWNLOAD HELPER
-// ==========================================
-
-function downloadFile(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-// ==========================================
-// 29. BUTTON CONNECTIONS
-// ==========================================
-
-$("exportCsvBtn").addEventListener("click", exportCSV);
-
-$("backupBtn").addEventListener("click", backupData);
-
-$("restoreBtn").addEventListener("click", restoreData);
-
-// ==========================================
-// 30. APPLICATION INITIALIZATION
+// 25. APPLICATION INITIALIZATION
 // ==========================================
 
 function initializeApp() {
@@ -3079,7 +2844,7 @@ function initializeApp() {
 }
 
 // ==========================================
-// 31. START APPLICATION
+// 26. START APPLICATION
 // ==========================================
 
 document.addEventListener(
