@@ -2167,7 +2167,7 @@ function timeIn() {
     return;
   }
 
-  const now = new Date();
+  const now = roundToNearest30(new Date());
   const date = [
     now.getFullYear(),
     String(now.getMonth() + 1).padStart(2, "0"),
@@ -2217,7 +2217,7 @@ function timeOut() {
     return;
   }
 
-  const now = new Date();
+  const now = roundToNearest30(new Date());
 
   const date = [
     now.getFullYear(),
@@ -3014,6 +3014,22 @@ document.addEventListener(
   "DOMContentLoaded",
   initializeApp
 );
+
+function roundToNearest30(date) {
+  const d = new Date(date);
+  const minutes = d.getMinutes();
+
+  if (minutes < 15) {
+    d.setMinutes(0, 0, 0);
+  } else if (minutes < 45) {
+    d.setMinutes(30, 0, 0);
+  } else {
+    d.setHours(d.getHours() + 1);
+    d.setMinutes(0, 0, 0);
+  }
+
+  return d;
+}
 
 </script>
 
